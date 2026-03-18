@@ -1,3 +1,4 @@
+import argparse
 import os
 import shutil
 from pathlib import Path
@@ -10,29 +11,36 @@ from tqdm import tqdm
 
 tfm = Compose([EnsureChannelFirst(channel_dim="no_channel"), ScaleIntensity(), Resize((256, 256, 128))])
 
-TDSC_ROOT = Path("/data02/workspace/LZJ_SPACE/MedMamba/dataset/ABUS_Classification/TDSC")
-SPLIT_CONFIGS = {
-    "train": {
-        "csv_path": TDSC_ROOT / "labels_train.csv",
-        "cache_dir": TDSC_ROOT / "train_cache_dir",
-        "cache_csv": TDSC_ROOT / "labels_train_cache.csv",
-        "expected_dir": TDSC_ROOT / "train" / "imagesTr_origin",
-    },
-    "val": {
-        "csv_path": TDSC_ROOT / "labels_val.csv",
-        "cache_dir": TDSC_ROOT / "val_cache_dir",
-        "cache_csv": TDSC_ROOT / "labels_val_cache.csv",
-        "expected_dir": TDSC_ROOT / "val" / "imagesVal_origin",
-    },
-    "test": {
-        "csv_path": TDSC_ROOT / "labels_test.csv",
-        "cache_dir": TDSC_ROOT / "test_cache_dir",
-        "cache_csv": TDSC_ROOT / "labels_test_cache.csv",
-        "expected_dir": TDSC_ROOT / "test" / "imagesTs_origin",
-    },
-}
-
 LABEL_MAP = {"B": 0, "M": 1}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build cached npy files for TDSC-like datasets.")
+    parser.add_argument("--root", required=True, help="Dataset root containing labels_*.csv and split folders.")
+    return parser.parse_args()
+
+
+def build_split_configs(root: Path):
+    return {
+        "train": {
+            "csv_path": root / "labels_train.csv",
+            "cache_dir": root / "train_cache_dir",
+            "cache_csv": root / "labels_train_cache.csv",
+            "expected_dir": root / "train" / "imagesTr_origin",
+        },
+        "val": {
+            "csv_path": root / "labels_val.csv",
+            "cache_dir": root / "val_cache_dir",
+            "cache_csv": root / "labels_val_cache.csv",
+            "expected_dir": root / "val" / "imagesVal_origin",
+        },
+        "test": {
+            "csv_path": root / "labels_test.csv",
+            "cache_dir": root / "test_cache_dir",
+            "cache_csv": root / "labels_test_cache.csv",
+            "expected_dir": root / "test" / "imagesTs_origin",
+        },
+    }
 
 
 def normalize_path(path_str: str) -> str:
@@ -110,7 +118,12 @@ def build_cache(split_name: str, csv_path: Path, cache_dir: Path, cache_csv: Pat
 
 
 def main() -> None:
-    for split_name, config in SPLIT_CONFIGS.items():
+    args = parse_args()
+    root = Path(args.root)
+    if not root.is_dir():
+        raise FileNotFoundError(f"Dataset root not found: {root}")
+
+    for split_name, config in build_split_configs(root).items():
         build_cache(
             split_name=split_name,
             csv_path=config["csv_path"],

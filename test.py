@@ -1,101 +1,98 @@
-import os
+import argparse
 import time
 from datetime import timedelta
+from pathlib import Path
 
-import torch
 import numpy as np
-import swanlab
+import torch
 from torch.utils.data import DataLoader
 
 from data.medical_dataset import Medical_Dataset
-from models import ResNet3D, R2Plus1DClassifier, R3DClassifier, UNetEncoderClassifier, SwinClassifier3D
+from models.model_factory import MODEL_CHOICES, build_model
 from utils.evaluator import evaluate_model
+
+try:
+    import swanlab
+except ImportError:
+    swanlab = None
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Evaluate a 3D medical image classifier.")
+    parser.add_argument("--test-csv", required=True, help="Path to test csv.")
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Path to checkpoint. Defaults to assets/checkpoints_3d/best_model_<model>.pth.",
+    )
+    parser.add_argument(
+        "--model",
+        default="medmamba3d_tiny",
+        choices=MODEL_CHOICES,
+        help="Backbone used for evaluation.",
+    )
+    parser.add_argument("--num-classes", type=int, default=2, help="Number of classes.")
+    parser.add_argument("--batch-size", type=int, default=4, help="Batch size.")
+    parser.add_argument("--num-workers", type=int, default=12, help="Dataloader workers.")
+    parser.add_argument("--device", default="cuda", help="Device string.")
+    parser.add_argument("--test-runs", type=int, default=5, help="Number of repeated runs.")
+    parser.add_argument("--swanlab-project", default="MedMamba", help="SwanLab project name.")
+    parser.add_argument("--disable-swanlab", action="store_true", help="Disable SwanLab logging.")
+    return parser.parse_args()
+
+
+def resolve_checkpoint_path(checkpoint_arg, model_name):
+    if checkpoint_arg:
+        return Path(checkpoint_arg)
+    return Path("assets/checkpoints_3d") / f"best_model_{model_name}.pth"
 
 
 def main():
+    args = parse_args()
+    if swanlab is None:
+        args.disable_swanlab = True
+
     print("\n" + "=" * 60)
     print(f"{'Model Testing Pipeline':^60}")
     print("=" * 60)
 
     start_time = time.time()
+    checkpoint_path = resolve_checkpoint_path(args.checkpoint, args.model)
+    test_dataset = Medical_Dataset(mode="test", csv_path=args.test_csv)
+    dataloader_kwargs = {
+        "batch_size": args.batch_size,
+        "shuffle": False,
+        "pin_memory": True,
+        "num_workers": args.num_workers,
+        "persistent_workers": args.num_workers > 0,
+    }
+    if args.num_workers > 0:
+        dataloader_kwargs["prefetch_factor"] = 8
+    test_dataloader = DataLoader(test_dataset, **dataloader_kwargs)
 
-    test_path = '/data02/workspace/LZJ_SPACE/MedMamba/dataset/ABUS_Classification/330_512_512/330_512_512_test.csv'
-    # test_path = '/data02/workspace/LZJ_SPACE/MedMamba/dataset/ABUS_Classification/ABUS_NEW/split_test_7_1_2_cache.csv'
-
-    batch_size = 4
-    device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
-    test_runs = int(os.getenv("TEST_RUNS", "5"))
-
-    test_dataset = Medical_Dataset(mode='test', csv_path=test_path)
-    test_dataloader = DataLoader(
-        test_dataset,
-        batch_size,
-        shuffle=False,
-        pin_memory=True,
-        num_workers=12,
-        persistent_workers=True,
-        prefetch_factor=8,
-    )
-
-    # 1) MedicalNet 预训练 3D ResNet
-    model = ResNet3D(
-        variant="resnet34",
-        num_classes=3,
-        in_chans=1,
-        pretrained=True
-    )
-
-    # 2) R(2+1)D (Kinetics400 预训练，输入视作时间维 T)
-    # model = R2Plus1DClassifier(
-    #     num_classes=3,
-    #     in_chans=1,
-    #     pretrained=True
-    # )
-
-    # 3) R3D/I3D (Kinetics400 预训练)
-    # model = R3DClassifier(
-    #     num_classes=3,
-    #     in_chans=1,
-    #     pretrained=True
-    # )
-
-    # 4) 3D UNet 编码器 + 分类头（无预训练）
-    # model = UNetEncoderClassifier(
-    #     num_classes=3,
-    #     in_chans=1
-    # )
-
-    # 5) Swin 3D（可加载 MONAI SSL 预训练权重）
-    # swin_kwargs = dict(num_classes=3, in_chans=1)
-    # model = SwinClassifier3D(
-    #     **swin_kwargs,
-    #     pretrained=False,
-    # )
-
-    model_name = getattr(model, "variant", model.__class__.__name__)
-    safe_model_name = str(model_name).replace(" ", "_")
-
-    checkpoint_path = os.path.join('assets', 'checkpoints_3d', f'best_model_{safe_model_name}.pth')
-    if not os.path.isfile(checkpoint_path):
-        raise FileNotFoundError(f"Best checkpoint not found: {checkpoint_path}")
+    device_name = args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu"
+    device = torch.device(device_name)
+    model = build_model(args.model, args.num_classes)
     state_dict = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(state_dict)
 
-    swanlab.init(
-        project="my-awesome-project",
-        config={
-            "phase": "test",
-            "runs": test_runs,
-            "batch_size": batch_size,
-            "model_tag": model_name,
-            "checkpoint": checkpoint_path,
-        },
-    )
+    if not args.disable_swanlab:
+        swanlab.init(
+            project=args.swanlab_project,
+            config={
+                "phase": "test",
+                "runs": args.test_runs,
+                "batch_size": args.batch_size,
+                "model_tag": args.model,
+                "checkpoint": str(checkpoint_path),
+                "test_csv": args.test_csv,
+            },
+        )
 
     metrics_list = []
     show_details = True
-    for run_idx in range(test_runs):
-        print(f"\n[Run {run_idx + 1}/{test_runs}]")
+    for run_idx in range(args.test_runs):
+        print(f"\n[Run {run_idx + 1}/{args.test_runs}]")
         metrics = evaluate_model(
             model,
             test_dataloader,
@@ -105,21 +102,22 @@ def main():
             desc=f"Test {run_idx + 1}",
         )
         metrics_list.append(metrics)
-        swanlab.log(
-            {
-                "run": run_idx + 1,
-                "accuracy": metrics[0],
-                "auc": metrics[1],
-                "sensitivity": metrics[2],
-                "specificity": metrics[3],
-                "f1": metrics[4],
-                "precision": metrics[5],
-                "mcc": metrics[6],
-            }
-        )
+        if not args.disable_swanlab:
+            swanlab.log(
+                {
+                    "run": run_idx + 1,
+                    "accuracy": metrics[0],
+                    "auc": metrics[1],
+                    "sensitivity": metrics[2],
+                    "specificity": metrics[3],
+                    "f1": metrics[4],
+                    "precision": metrics[5],
+                    "mcc": metrics[6],
+                }
+            )
         show_details = False
 
-    if test_runs > 1:
+    if args.test_runs > 1:
         metrics_arr = np.array(metrics_list, dtype=np.float32)
         mean = metrics_arr.mean(axis=0)
         std = metrics_arr.std(axis=0)
@@ -131,31 +129,34 @@ def main():
         print(f"F1:       {mean[4]:.4f} ± {std[4]:.4f}")
         print(f"Prec:     {mean[5]:.4f} ± {std[5]:.4f}")
         print(f"MCC:      {mean[6]:.4f} ± {std[6]:.4f}")
-        swanlab.log(
-            {
-                "mean/accuracy": mean[0],
-                "mean/auc": mean[1],
-                "mean/sensitivity": mean[2],
-                "mean/specificity": mean[3],
-                "mean/f1": mean[4],
-                "mean/precision": mean[5],
-                "mean/mcc": mean[6],
-                "std/accuracy": std[0],
-                "std/auc": std[1],
-                "std/sensitivity": std[2],
-                "std/specificity": std[3],
-                "std/f1": std[4],
-                "std/precision": std[5],
-                "std/mcc": std[6],
-            }
-        )
+        if not args.disable_swanlab:
+            swanlab.log(
+                {
+                    "mean/accuracy": mean[0],
+                    "mean/auc": mean[1],
+                    "mean/sensitivity": mean[2],
+                    "mean/specificity": mean[3],
+                    "mean/f1": mean[4],
+                    "mean/precision": mean[5],
+                    "mean/mcc": mean[6],
+                    "std/accuracy": std[0],
+                    "std/auc": std[1],
+                    "std/sensitivity": std[2],
+                    "std/specificity": std[3],
+                    "std/f1": std[4],
+                    "std/precision": std[5],
+                    "std/mcc": std[6],
+                }
+            )
 
     total_time = time.time() - start_time
     print("\n" + "=" * 60)
     print(f"Testing completed in {str(timedelta(seconds=int(total_time)))}")
     print("=" * 60 + "\n")
-    swanlab.finish()
+
+    if not args.disable_swanlab:
+        swanlab.finish()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
