@@ -6,6 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -33,6 +34,13 @@ def parse_args():
     parser.add_argument("--weight-decay", type=float, default=1e-2, help="Weight decay.")
     parser.add_argument("--num-workers", type=int, default=12, help="Dataloader workers.")
     parser.add_argument("--seed", type=int, default=3407, help="Random seed.")
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Run training sequentially for multiple seeds, e.g. --seeds 3407 42 1234.",
+    )
     parser.add_argument("--num-classes", type=int, default=2, help="Number of classes.")
     parser.add_argument(
         "--model",
@@ -87,27 +95,23 @@ def resolve_save_path(save_path_arg, model_name):
     return Path("assets/checkpoints_3d") / f"best_model_{model_name}.pth"
 
 
-def main():
-    args = parse_args()
-    if swanlab is None:
-        args.disable_swanlab = True
+def resolve_seed_save_path(base_save_path, seed, multi_seed):
+    if not multi_seed:
+        return base_save_path
+    return base_save_path.with_name(f"{base_save_path.stem}_seed{seed}{base_save_path.suffix}")
 
-    print("\n" + "=" * 60)
-    print(f"{'Model Training Pipeline':^60}")
-    print("=" * 60)
 
+def train_one_seed(args, seed, train_path, val_path, multi_seed):
     start_time = time.time()
-    set_seed(args.seed)
+    set_seed(seed)
 
-    train_path = Path(args.train_csv)
-    val_path = Path(args.val_csv)
     if not train_path.is_file():
         raise FileNotFoundError(f"Training csv not found: {train_path}")
     if not val_path.is_file():
         raise FileNotFoundError(f"Validation csv not found: {val_path}")
 
-    train_dataset = Medical_Dataset(mode="train", csv_path=str(train_path))
-    val_dataset = Medical_Dataset(mode="val", csv_path=str(val_path))
+    train_dataset = Medical_Dataset(mode="train", csv_path=str(train_path), roi_size=(256, 256, 128), margin=12)
+    val_dataset = Medical_Dataset(mode="val", csv_path=str(val_path), roi_size=(256, 256, 128), margin=12)
 
     train_dataloader = build_dataloader(
         train_dataset, args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True
@@ -118,7 +122,8 @@ def main():
 
     device_name = args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu"
     device = torch.device(device_name)
-    save_path = resolve_save_path(args.save_path, args.model)
+    base_save_path = resolve_save_path(args.save_path, args.model)
+    save_path = resolve_seed_save_path(base_save_path, seed, multi_seed)
 
     model = build_model(args.model, args.num_classes).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -135,6 +140,7 @@ def main():
     print(f"  {'Learning rate':18}: {args.lr}")
     print(f"  {'Num classes':18}: {args.num_classes}")
     print(f"  {'Model':18}: {args.model}")
+    print(f"  {'Seed':18}: {seed}")
     print(f"  {'Device':18}: {device}")
     print(f"  {'Save path':18}: {save_path}")
 
@@ -147,6 +153,7 @@ def main():
                 "batch_size": args.batch_size,
                 "num_classes": args.num_classes,
                 "model": args.model,
+                "seed": seed,
                 "train_csv": str(train_path),
                 "val_csv": str(val_path),
                 "save_path": str(save_path),
@@ -212,6 +219,55 @@ def main():
 
     if not args.disable_swanlab:
         swanlab.finish()
+
+    return {
+        "seed": seed,
+        "best_auc": float(best_auc),
+        "save_path": str(save_path),
+        "train_time_sec": total_time,
+    }
+
+
+def main():
+    args = parse_args()
+    if swanlab is None:
+        args.disable_swanlab = True
+
+    print("\n" + "=" * 60)
+    print(f"{'Model Training Pipeline':^60}")
+    print("=" * 60)
+
+    train_path = Path(args.train_csv)
+    val_path = Path(args.val_csv)
+    seeds = args.seeds if args.seeds else [args.seed]
+    multi_seed = len(seeds) > 1
+    results = []
+
+    for run_idx, seed in enumerate(seeds, start=1):
+        if multi_seed:
+            print("\n" + "#" * 60)
+            print(f"{'Seed Run':^20}: {run_idx}/{len(seeds)}  seed={seed}")
+            print("#" * 60)
+        result = train_one_seed(args, seed, train_path, val_path, multi_seed)
+        results.append(result)
+
+    if multi_seed:
+        aucs = np.array([item["best_auc"] for item in results], dtype=np.float32)
+        print("\n" + "=" * 60)
+        print(f"{'Multi-Seed Summary':^60}")
+        print("=" * 60)
+        for item in results:
+            print(
+                f"seed={item['seed']}  best_auc={item['best_auc']:.4f}  "
+                f"checkpoint={item['save_path']}"
+            )
+        print(f"mean_auc={aucs.mean():.4f}  std_auc={aucs.std():.4f}")
+        print("=" * 60 + "\n")
+        summary_path = resolve_save_path(args.save_path, args.model).with_name(
+            f"{resolve_save_path(args.save_path, args.model).stem}_multiseed_summary.csv"
+        )
+        pd.DataFrame(results).to_csv(summary_path, index=False)
+        print(f"Multi-seed summary saved to: {summary_path}")
 
 
 if __name__ == "__main__":

@@ -64,7 +64,7 @@ def evaluate(model, dataloader, device, show_details: bool = True, desc: str = "
     precision = all_metrics['precision']
     mcc = all_metrics['mcc']
     
-    return accuracy, auc, sensitivity, specificity, f1, precision, mcc
+    return accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr
 
 
 def evaluate_model(
@@ -74,9 +74,10 @@ def evaluate_model(
     verbose: bool = True,
     show_details: bool = True,
     desc: str = "Eval",
+    return_outputs: bool = False,
 ):
 
-    accuracy, auc, sensitivity, specificity, f1, precision, mcc = evaluate(
+    accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr = evaluate(
         model, dataloader, device, show_details=show_details, desc=desc
     )
     
@@ -89,4 +90,7 @@ def evaluate_model(
         print(f"Prec:     {precision:.4f}")
         print(f"MCC:      {mcc:.4f}")
     
+    if return_outputs:
+        return accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr
+
     return accuracy, auc, sensitivity, specificity, f1, precision, mcc

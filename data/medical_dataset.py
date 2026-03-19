@@ -11,7 +11,7 @@ from monai.transforms import (
 
 
 class Medical_Dataset(Dataset):
-    def __init__(self,  mode, csv_path):
+    def __init__(self,  mode, csv_path, roi_size=(256, 256, 128), margin=12):
         self.mode = mode
         self.data = pd.read_csv(csv_path)
         self.train_aug = Compose([
@@ -22,19 +22,23 @@ class Medical_Dataset(Dataset):
             # RandRotate90(prob=0.5, spatial_axes=(0, 1)),
             # RandRotate90(prob=0.5, spatial_axes=(0, 2)),
         ])
-        self.val_aug = Compose([ScaleIntensity(minv=0.0, maxv=1.0)])
-        
-    
+        self.val_aug = Compose([
+            ScaleIntensity(minv=0.0, maxv=1.0),
+        ])
+
     def __len__(self):
         return len(self.data)
+
+    def _ensure_channel_first(self, arr):
+        if arr.ndim == 3:
+            arr = arr[None, ...]
+        return arr
 
     def __getitem__(self, idx):
         
         row = self.data.iloc[idx]
         img = np.load(row["npy_path"])
-        # 确保有通道维度：原始保存为 (D,H,W) 时补成 (1,D,H,W)
-        if img.ndim == 3:
-            img = img[None, ...]
+        img = self._ensure_channel_first(img)
         if self.mode == 'train':
             img = self.train_aug(img)
         else:

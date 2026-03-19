@@ -125,6 +125,16 @@ python train.py \
   --num-classes 2
 ```
 
+多 seed 批量训练示例：
+
+```bash
+python train.py \
+  --train-csv /path/to/TDSC/labels_train_cache.csv \
+  --val-csv /path/to/TDSC/labels_val_cache.csv \
+  --model medmamba3d_tiny \
+  --seeds 3407 42 1234
+```
+
 训练脚本当前行为包括：
 
 - 固定随机种子
@@ -139,6 +149,18 @@ python train.py \
 
 ```text
 assets/checkpoints_3d/best_model_<model>.pth
+```
+
+如果使用 `--seeds` 进行多 seed 训练，则会自动保存为：
+
+```text
+assets/checkpoints_3d/best_model_<model>_seed<seed>.pth
+```
+
+并额外导出：
+
+```text
+assets/checkpoints_3d/best_model_<model>_multiseed_summary.csv
 ```
 
 ## 测试

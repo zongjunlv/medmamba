@@ -4,6 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
@@ -35,7 +36,11 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size.")
     parser.add_argument("--num-workers", type=int, default=12, help="Dataloader workers.")
     parser.add_argument("--device", default="cuda", help="Device string.")
-    parser.add_argument("--test-runs", type=int, default=5, help="Number of repeated runs.")
+    parser.add_argument(
+        "--export-pred-csv",
+        default=None,
+        help="Optional path to export per-sample predictions. Defaults to assets/test_outputs/predictions_<model>.csv.",
+    )
     parser.add_argument("--swanlab-project", default="MedMamba", help="SwanLab project name.")
     parser.add_argument("--disable-swanlab", action="store_true", help="Disable SwanLab logging.")
     return parser.parse_args()
@@ -45,6 +50,40 @@ def resolve_checkpoint_path(checkpoint_arg, model_name):
     if checkpoint_arg:
         return Path(checkpoint_arg)
     return Path("assets/checkpoints_3d") / f"best_model_{model_name}.pth"
+
+
+def resolve_export_path(export_arg, model_name):
+    if export_arg:
+        return Path(export_arg)
+    return Path("assets/test_outputs") / f"predictions_{model_name}.csv"
+
+
+def print_probability_summary(labels_arr, probs_arr):
+    pos_probs = probs_arr[:, 1] if probs_arr.shape[1] > 1 else probs_arr[:, 0]
+    print("\nPositive-Class Probability Summary")
+    print(f"all   : min={pos_probs.min():.4f} q25={np.quantile(pos_probs, 0.25):.4f} "
+          f"median={np.quantile(pos_probs, 0.5):.4f} q75={np.quantile(pos_probs, 0.75):.4f} max={pos_probs.max():.4f}")
+    for label in sorted(np.unique(labels_arr).tolist()):
+        mask = labels_arr == label
+        cls_probs = pos_probs[mask]
+        if len(cls_probs) == 0:
+            continue
+        print(f"label={label}: min={cls_probs.min():.4f} q25={np.quantile(cls_probs, 0.25):.4f} "
+              f"median={np.quantile(cls_probs, 0.5):.4f} q75={np.quantile(cls_probs, 0.75):.4f} max={cls_probs.max():.4f}")
+
+
+def export_predictions_csv(export_path, dataset, labels_arr, preds_arr, probs_arr):
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    df = dataset.data.copy().reset_index(drop=True)
+    df["label_true"] = labels_arr.astype(int)
+    df["label_pred"] = preds_arr.astype(int)
+    if probs_arr.shape[1] == 1:
+        df["prob_0"] = probs_arr[:, 0]
+    else:
+        for idx in range(probs_arr.shape[1]):
+            df[f"prob_{idx}"] = probs_arr[:, idx]
+    df.to_csv(export_path, index=False)
+    print(f"\nPer-sample predictions exported to: {export_path}")
 
 
 def main():
@@ -58,7 +97,8 @@ def main():
 
     start_time = time.time()
     checkpoint_path = resolve_checkpoint_path(args.checkpoint, args.model)
-    test_dataset = Medical_Dataset(mode="test", csv_path=args.test_csv)
+    export_path = resolve_export_path(args.export_pred_csv, args.model)
+    test_dataset = Medical_Dataset(mode="test", csv_path=args.test_csv, roi_size=(256, 256, 128), margin=12)
     dataloader_kwargs = {
         "batch_size": args.batch_size,
         "shuffle": False,
@@ -73,7 +113,7 @@ def main():
     device_name = args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu"
     device = torch.device(device_name)
     model = build_model(args.model, args.num_classes)
-    state_dict = torch.load(checkpoint_path, map_location=device)
+    state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
 
     if not args.disable_swanlab:
@@ -81,7 +121,6 @@ def main():
             project=args.swanlab_project,
             config={
                 "phase": "test",
-                "runs": args.test_runs,
                 "batch_size": args.batch_size,
                 "model_tag": args.model,
                 "checkpoint": str(checkpoint_path),
@@ -89,65 +128,31 @@ def main():
             },
         )
 
-    metrics_list = []
-    show_details = True
-    for run_idx in range(args.test_runs):
-        print(f"\n[Run {run_idx + 1}/{args.test_runs}]")
-        metrics = evaluate_model(
-            model,
-            test_dataloader,
-            device,
-            verbose=True,
-            show_details=show_details,
-            desc=f"Test {run_idx + 1}",
-        )
-        metrics_list.append(metrics)
-        if not args.disable_swanlab:
-            swanlab.log(
-                {
-                    "run": run_idx + 1,
-                    "accuracy": metrics[0],
-                    "auc": metrics[1],
-                    "sensitivity": metrics[2],
-                    "specificity": metrics[3],
-                    "f1": metrics[4],
-                    "precision": metrics[5],
-                    "mcc": metrics[6],
-                }
-            )
-        show_details = False
+    metrics = evaluate_model(
+        model,
+        test_dataloader,
+        device,
+        verbose=True,
+        show_details=True,
+        desc="Test",
+        return_outputs=True,
+    )
+    accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr = metrics
+    print_probability_summary(labels_arr, probs_arr)
+    export_predictions_csv(export_path, test_dataset, labels_arr, preds_arr, probs_arr)
 
-    if args.test_runs > 1:
-        metrics_arr = np.array(metrics_list, dtype=np.float32)
-        mean = metrics_arr.mean(axis=0)
-        std = metrics_arr.std(axis=0)
-        print("\nMEAN ± STD")
-        print(f"Accuracy: {mean[0]:.4f} ± {std[0]:.4f}")
-        print(f"AUC:      {mean[1]:.4f} ± {std[1]:.4f}")
-        print(f"Sens:     {mean[2]:.4f} ± {std[2]:.4f}")
-        print(f"Spec:     {mean[3]:.4f} ± {std[3]:.4f}")
-        print(f"F1:       {mean[4]:.4f} ± {std[4]:.4f}")
-        print(f"Prec:     {mean[5]:.4f} ± {std[5]:.4f}")
-        print(f"MCC:      {mean[6]:.4f} ± {std[6]:.4f}")
-        if not args.disable_swanlab:
-            swanlab.log(
-                {
-                    "mean/accuracy": mean[0],
-                    "mean/auc": mean[1],
-                    "mean/sensitivity": mean[2],
-                    "mean/specificity": mean[3],
-                    "mean/f1": mean[4],
-                    "mean/precision": mean[5],
-                    "mean/mcc": mean[6],
-                    "std/accuracy": std[0],
-                    "std/auc": std[1],
-                    "std/sensitivity": std[2],
-                    "std/specificity": std[3],
-                    "std/f1": std[4],
-                    "std/precision": std[5],
-                    "std/mcc": std[6],
-                }
-            )
+    if not args.disable_swanlab:
+        swanlab.log(
+            {
+                "accuracy": accuracy,
+                "auc": auc,
+                "sensitivity": sensitivity,
+                "specificity": specificity,
+                "f1": f1,
+                "precision": precision,
+                "mcc": mcc,
+            }
+        )
 
     total_time = time.time() - start_time
     print("\n" + "=" * 60)
