@@ -34,7 +34,7 @@ def parse_args():
     )
     parser.add_argument("--num-classes", type=int, default=2, help="Number of classes.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size.")
-    parser.add_argument("--num-workers", type=int, default=12, help="Dataloader workers.")
+    parser.add_argument("--num-workers", type=int, default=8, help="Dataloader workers.")
     parser.add_argument("--device", default="cuda", help="Device string.")
     parser.add_argument(
         "--export-pred-csv",
@@ -137,7 +137,7 @@ def main():
         desc="Test",
         return_outputs=True,
     )
-    accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr = metrics
+    val_loss, accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr = metrics
     print_probability_summary(labels_arr, probs_arr)
     export_predictions_csv(export_path, test_dataset, labels_arr, preds_arr, probs_arr)
 
@@ -145,6 +145,7 @@ def main():
         swanlab.log(
             {
                 "accuracy": accuracy,
+                "val_loss": val_loss,
                 "auc": auc,
                 "sensitivity": sensitivity,
                 "specificity": specificity,

@@ -15,6 +15,7 @@ class Trainer:
         self.optimizer = optimizer
         self.criterion = criterion
         self.device = device
+        self.is_main_process = int(os.environ.get("RANK", "0")) == 0
 
     def train(self, dataloader):
         self.model.train()
@@ -23,7 +24,13 @@ class Trainer:
             'processed_samples' : 0
         }
         
-        pbar = tqdm(dataloader, desc='Train', bar_format='{l_bar}{bar:30}{r_bar}', colour='blue')
+        pbar = tqdm(
+            dataloader,
+            desc='Train',
+            bar_format='{l_bar}{bar:30}{r_bar}',
+            colour='blue',
+            disable=not self.is_main_process,
+        )
 
         for batch in pbar:
             img, label = [x.to(self.device) for x in batch]
@@ -53,7 +60,13 @@ class Trainer:
         total_loss = 0.0
         processed_sample = 0
 
-        pbar = tqdm(dataloader, desc='val', bar_format='{l_bar}{bar:30}{r_bar}', colour='green')
+        pbar = tqdm(
+            dataloader,
+            desc='val',
+            bar_format='{l_bar}{bar:30}{r_bar}',
+            colour='green',
+            disable=not self.is_main_process,
+        )
 
         with torch.inference_mode():
             for batch in pbar:

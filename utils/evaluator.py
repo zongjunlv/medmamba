@@ -10,6 +10,9 @@ def evaluate(model, dataloader, device, show_details: bool = True, desc: str = "
 
     model.to(device).eval()
     labels_list, probs_list, preds_list = [], [], []
+    total_loss = 0.0
+    processed_samples = 0
+    criterion = torch.nn.CrossEntropyLoss()
 
     with torch.no_grad():
         pbar = tqdm(
@@ -29,6 +32,11 @@ def evaluate(model, dataloader, device, show_details: bool = True, desc: str = "
                 logits = model_output[0]
             else:
                 logits = model_output
+
+            loss = criterion(logits, labels)
+            batch_size = labels.size(0)
+            total_loss += loss.item() * batch_size
+            processed_samples += batch_size
             
             # 计算概率和预测
             probs = torch.softmax(logits, dim=1)
@@ -63,8 +71,9 @@ def evaluate(model, dataloader, device, show_details: bool = True, desc: str = "
     f1 = all_metrics['macro_f1']
     precision = all_metrics['precision']
     mcc = all_metrics['mcc']
+    avg_loss = total_loss / max(1, processed_samples)
     
-    return accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr
+    return avg_loss, accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr
 
 
 def evaluate_model(
@@ -77,7 +86,7 @@ def evaluate_model(
     return_outputs: bool = False,
 ):
 
-    accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr = evaluate(
+    val_loss, accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr = evaluate(
         model, dataloader, device, show_details=show_details, desc=desc
     )
     
@@ -91,6 +100,6 @@ def evaluate_model(
         print(f"MCC:      {mcc:.4f}")
     
     if return_outputs:
-        return accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr
+        return val_loss, accuracy, auc, sensitivity, specificity, f1, precision, mcc, labels_arr, preds_arr, probs_arr
 
-    return accuracy, auc, sensitivity, specificity, f1, precision, mcc
+    return val_loss, accuracy, auc, sensitivity, specificity, f1, precision, mcc

@@ -35,13 +35,16 @@ MedMamba/
 安装基础依赖：
 
 ```bash
-pip install -r requirements.txt
+pip install torch==1.13.0 torchvision==0.14.0 torchaudio==0.13.0 --extra-index-url https://download.pytorch.org/whl/cu117
+pip install packaging timm==0.4.12 pytest chardet yacs termcolor submitit tensorboardX
+pip install triton==2.0.0 scikit-learn matplotlib thop h5py SimpleITK scikit-image medpy monai==1.3.0 nibabel==5.1.0
 ```
 
-如果缺少 3D 医学图像相关依赖，可补充安装：
+如果使用 VideoMamba / SS3D 相关变体，还需要补充：
 
 ```bash
-pip install monai SimpleITK scikit-image medpy scikit-learn pandas tqdm swanlab
+pip install causal_conv1d==1.0.0
+pip install mamba_ssm==1.0.1
 ```
 
 ## 数据组织
@@ -101,7 +104,7 @@ python utils/pre_cache_binary_tdsc.py --root /path/to/TDSC
 
 ## 训练
 
-当前 [train.py](/data02/workspace/LZJ_SPACE/MedMamba/train.py) 默认使用 `models.medmamba3d_videomamba.create_medmamba3d_tiny`，并通过命令行参数传入数据路径与训练参数。
+当前 [train.py](/Users/jungle/Documents/MedMamba/medmamba/train.py) 支持单卡与 `torchrun` 单机多卡训练，并通过命令行参数传入数据路径与训练参数。
 
 最小训练示例：
 
@@ -109,10 +112,11 @@ python utils/pre_cache_binary_tdsc.py --root /path/to/TDSC
 python train.py \
   --train-csv /path/to/TDSC/labels_train_cache.csv \
   --val-csv /path/to/TDSC/labels_val_cache.csv \
-  --model medmamba3d_tiny
+  --model medmamba3d_tiny \
+  --disable-swanlab
 ```
 
-完整示例：
+单卡完整示例：
 
 ```bash
 python train.py \
@@ -122,7 +126,23 @@ python train.py \
   --epochs 200 \
   --lr 1e-5 \
   --model medmamba3d_small \
-  --num-classes 2
+  --num-classes 2 \
+  --disable-swanlab
+```
+
+单机双卡示例：
+
+```bash
+torchrun --nproc_per_node=2 train.py \
+  --train-csv /path/to/TDSC/labels_train_cache.csv \
+  --val-csv /path/to/TDSC/labels_val_cache.csv \
+  --batch-size 4 \
+  --epochs 200 \
+  --lr 1e-5 \
+  --model medmamba3d_small \
+  --num-classes 2 \
+  --find-unused-parameters \
+  --disable-swanlab
 ```
 
 多 seed 批量训练示例：
@@ -132,7 +152,8 @@ python train.py \
   --train-csv /path/to/TDSC/labels_train_cache.csv \
   --val-csv /path/to/TDSC/labels_val_cache.csv \
   --model medmamba3d_tiny \
-  --seeds 3407 42 1234
+  --seeds 3407 42 1234 \
+  --disable-swanlab
 ```
 
 训练脚本当前行为包括：
@@ -141,8 +162,11 @@ python train.py \
 - 使用 `AdamW`
 - warmup + cosine 学习率调度
 - 每轮验证
-- 按 AUC 保存最优模型
+- 按 `MCC` 保存最优模型
+- 记录训练过程中出现的 `AUC` 上限
+- 输出 `sensitivity / specificity` 以及两者差值，辅助判断是否偏科
 - 早停控制
+- 本地持续保存 `csv` 日志与训练曲线图
 - 可选 `swanlab` 记录指标
 
 如果不传 `--save-path`，默认保存为：
@@ -163,16 +187,24 @@ assets/checkpoints_3d/best_model_<model>_seed<seed>.pth
 assets/checkpoints_3d/best_model_<model>_multiseed_summary.csv
 ```
 
+如果不传 `--log-dir`，训练日志默认保存为：
+
+```text
+assets/training_logs/train_log_<model>.csv
+assets/training_logs/train_curves_<model>.png
+```
+
 ## 测试
 
-当前 [test.py](/data02/workspace/LZJ_SPACE/MedMamba/test.py) 通过命令行选择测试集、模型类型和 checkpoint。
+当前 [test.py](/Users/jungle/Documents/MedMamba/medmamba/test.py) 通过命令行选择测试集、模型类型和 checkpoint。
 
 最小测试示例：
 
 ```bash
 python test.py \
   --test-csv /path/to/TDSC/labels_test_cache.csv \
-  --model medmamba3d_tiny
+  --model medmamba3d_tiny \
+  --disable-swanlab
 ```
 
 完整示例：
@@ -180,10 +212,12 @@ python test.py \
 ```bash
 python test.py \
   --test-csv /path/to/TDSC/labels_test_cache.csv \
-  --checkpoint assets/checkpoints_3d/best_model_resnet34.pth \
-  --model resnet34 \
+  --checkpoint assets/checkpoints_3d/best_model_medmamba3d_small.pth \
+  --model medmamba3d_small \
   --num-classes 2 \
-  --test-runs 5
+  --batch-size 4 \
+  --num-workers 8 \
+  --disable-swanlab
 ```
 
 支持的测试模型：
@@ -208,12 +242,12 @@ assets/checkpoints_3d/best_model_<model>.pth
 
 当前仓库里和主实验最相关的模型文件有：
 
-- [models/medmamba3d.py](/data02/workspace/LZJ_SPACE/MedMamba/models/medmamba3d.py)
-- [models/medmamba3d_videomamba.py](/data02/workspace/LZJ_SPACE/MedMamba/models/medmamba3d_videomamba.py)
-- [models/layers/ss3d.py](/data02/workspace/LZJ_SPACE/MedMamba/models/layers/ss3d.py)
-- [models/layers/ss3d_videomamba.py](/data02/workspace/LZJ_SPACE/MedMamba/models/layers/ss3d_videomamba.py)
-- [models/layers/vss3d_layer.py](/data02/workspace/LZJ_SPACE/MedMamba/models/layers/vss3d_layer.py)
-- [models/layers/vss3d_layer_videomamba.py](/data02/workspace/LZJ_SPACE/MedMamba/models/layers/vss3d_layer_videomamba.py)
+- [models/medmamba3d.py](/Users/jungle/Documents/MedMamba/medmamba/models/medmamba3d.py)
+- [models/medmamba3d_videomamba.py](/Users/jungle/Documents/MedMamba/medmamba/models/medmamba3d_videomamba.py)
+- [models/layers/ss3d.py](/Users/jungle/Documents/MedMamba/medmamba/models/layers/ss3d.py)
+- [models/layers/ss3d_videomamba.py](/Users/jungle/Documents/MedMamba/medmamba/models/layers/ss3d_videomamba.py)
+- [models/layers/vss3d_layer.py](/Users/jungle/Documents/MedMamba/medmamba/models/layers/vss3d_layer.py)
+- [models/layers/vss3d_layer_videomamba.py](/Users/jungle/Documents/MedMamba/medmamba/models/layers/vss3d_layer_videomamba.py)
 
 ## Grad-CAM
 
@@ -221,15 +255,15 @@ assets/checkpoints_3d/best_model_<model>.pth
 
 当前仓库中比较关键的文件：
 
-- [grad_cam/abus3d_cam.py](/data02/workspace/LZJ_SPACE/MedMamba/grad_cam/abus3d_cam.py)
-- [grad_cam/abus3d_cam_eval.py](/data02/workspace/LZJ_SPACE/MedMamba/grad_cam/abus3d_cam_eval.py)
+- [grad_cam/abus3d_cam.py](/Users/jungle/Documents/MedMamba/medmamba/grad_cam/abus3d_cam.py)
+- [grad_cam/abus3d_cam_eval.py](/Users/jungle/Documents/MedMamba/medmamba/grad_cam/abus3d_cam_eval.py)
 
 ## 注意事项
 
 - `dataset/` 不纳入 Git 仓库
 - 训练和测试都需要显式传入 csv 或 checkpoint 路径
 - `test.py` 的模型结构必须和 checkpoint 对应
-- `swanlab` 已接入，如果本机未登录，运行时可能需要先配置
+- 推荐优先查看本地 `csv/png` 日志；如无联网环境可直接使用 `--disable-swanlab`
 
 ## 建议的后续整理
 
